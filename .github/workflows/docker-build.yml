@@ -35,6 +35,8 @@ jobs:
           sudo mkswap /swapfile1
           sudo swapon /swapfile1
           free -h
+          df -h
+          mount
 
       - name: Set build platforms
         id: platform
