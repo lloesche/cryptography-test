@@ -1,23 +1,11 @@
-# This is the resoto base container. It includes CPython and pypy and is used
-# as the common base for all the other containers. The main size contributor
-# is the resoto-venv-python3 and resoto-venv-pypy3 virtual environments which
-# are required for all resoto packages. That's why size wise it made sense to
-# use the same base package for all containers.
-ARG UI_IMAGE_TAG=latest
-FROM ghcr.io/someengineering/resoto-ui:${UI_IMAGE_TAG} as resoto-ui-env
-FROM docker.io/arangodb/arangodb:3.9.1-noavx as arangodb-amd64-env
-FROM docker.io/programmador/arangodb:3.9.0-devel as arangodb-arm64-env
-
 FROM someengineering/resotopython:1.0.1 as build-env
 ENV DEBIAN_FRONTEND=noninteractive
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
-ARG TESTS
 ARG SOURCE_COMMIT
 
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN echo "I am running on ${BUILDPLATFORM}, building for ${TARGETPLATFORM}"
-COPY --from=resoto-ui-env /usr/local/resoto/ui /usr/local/resoto/ui
 # Install Build dependencies
 RUN apt-get update
 RUN apt-get -y dist-upgrade
@@ -55,35 +43,6 @@ RUN apt-get -y install \
 WORKDIR /usr/local
 RUN /usr/local/python/bin/python3 -m venv resoto-venv-python3
 RUN /usr/local/pypy/bin/pypy3 -m venv resoto-venv-pypy3
-RUN /usr/local/python/bin/python3 -m venv /build/jupyterlite-venv-python3
-
-# Download and install ArangoDB client on x86 builds (there are no official ArangoDB binaries for arm64)
-WORKDIR /tmp/arangodb
-RUN mkdir -p /tmp/arangodb/amd64 /tmp/arangodb/arm64
-COPY --from=arangodb-amd64-env /usr/bin/arangodump /tmp/arangodb/amd64/
-COPY --from=arangodb-amd64-env /usr/bin/arangorestore /tmp/arangodb/amd64/
-COPY --from=arangodb-arm64-env /usr/bin/arangodump /tmp/arangodb/arm64/
-COPY --from=arangodb-arm64-env /usr/bin/arangorestore /tmp/arangodb/arm64/
-RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-        cp /tmp/arangodb/amd64/* /usr/local/bin/; \
-    elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-        cp /tmp/arangodb/arm64/* /usr/local/bin/; \
-    else \
-        echo "Building for unknown platform - not copying ArangoDB client binaries"; \
-    fi
-
-# Download AWS CLI
-WORKDIR /build/awscli
-RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-        export AWSCLI_ARCH=x86_64; \
-    elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-        export AWSCLI_ARCH=aarch64; \
-    else \
-        export AWSCLI_ARCH=x86_64; \
-    fi; \
-    curl -L -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-${AWSCLI_ARCH}.zip
-RUN unzip /tmp/awscliv2.zip
-RUN aws/install -i /usr/local/aws-cli -b /usr/local/bin
 
 # Prepare PyPy whl build env
 RUN mkdir -p /build-python
@@ -94,76 +53,16 @@ RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip install -U pi
 RUN . /usr/local/resoto-venv-pypy3/bin/activate && pypy3 -m pip install -U pip wheel
 
 # Build resotolib
-COPY resotolib /usr/src/resotolib
-WORKDIR /usr/src/resotolib
+COPY cryptographytest /usr/src/cryptographytest
+WORKDIR /usr/src/cryptographytest
 RUN if [ "X${TESTS:-false}" = Xtrue ]; then . /usr/local/resoto-venv-python3/bin/activate && tox; fi
 RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip wheel -w /build-python -f /build-python .
 RUN . /usr/local/resoto-venv-pypy3/bin/activate && pypy3 -m pip wheel -w /build-pypy -f /build-pypy .
-
-# Build resotocore
-COPY resotocore /usr/src/resotocore
-WORKDIR /usr/src/resotocore
-#RUN if [ "X${TESTS:-false}" = Xtrue ]; then nohup bash -c "/usr/local/db/bin/arangod --database.directory /tmp --server.endpoint tcp://127.0.0.1:8529 --database.password root &"; sleep 5; tox; fi
-RUN . /build/jupyterlite-venv-python3/bin/activate && python -m pip install -r requirements-jupyterlite.txt
-RUN . /build/jupyterlite-venv-python3/bin/activate && python -m jupyter lite build --config jupyter_lite_config.json
-RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip wheel -w /build-python -f /build-python .
-RUN . /usr/local/resoto-venv-pypy3/bin/activate && pypy3 -m pip wheel -w /build-pypy -f /build-pypy .
-
-# Build resotoworker
-COPY resotoworker /usr/src/resotoworker
-WORKDIR /usr/src/resotoworker
-RUN if [ "X${TESTS:-false}" = Xtrue ]; then . /usr/local/resoto-venv-python3/bin/activate && tox; fi
-RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip wheel -w /build-python -f /build-python .
-
-# Build resotometrics
-COPY resotometrics /usr/src/resotometrics
-WORKDIR /usr/src/resotometrics
-RUN if [ "X${TESTS:-false}" = Xtrue ]; then . /usr/local/resoto-venv-python3/bin/activate && tox; fi
-RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip wheel -w /build-python -f /build-python .
-
-# Build resotoshell
-COPY resotoshell /usr/src/resotoshell
-WORKDIR /usr/src/resotoshell
-RUN if [ "X${TESTS:-false}" = Xtrue ]; then . /usr/local/resoto-venv-python3/bin/activate && tox; fi
-RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip wheel -w /build-python -f /build-python .
-
-# Build resoto plugins
-COPY plugins /usr/src/plugins
-WORKDIR /usr/src
-RUN if [ "X${TESTS:-false}" = Xtrue ]; then . /usr/local/resoto-venv-python3/bin/activate && find plugins/ -name tox.ini | while read toxini; do cd $(dirname "$toxini") && tox && cd - || exit 1; done; fi
-RUN . /usr/local/resoto-venv-python3/bin/activate && find plugins/ -maxdepth 1 -mindepth 1 -type d -print0 | xargs -0 python -m pip wheel -w /build-python -f /build-python
-
-# Workaround until cattrs 22.2.0 is released
-RUN rm -f /build-python/cattrs-22.2.0.dev0-py3-none-any.whl /build-pypy/cattrs-22.2.0.dev0-py3-none-any.whl
 
 # Install all wheels
 RUN . /usr/local/resoto-venv-python3/bin/activate && python -m pip install -f /build-python /build-python/*.whl
 RUN . /usr/local/resoto-venv-pypy3/bin/activate && pypy3 -m pip install -f /build-pypy /build-pypy/*.whl
 
-# Copy image config and startup files
-WORKDIR /usr/src/resoto
-COPY dockerV2/defaults /usr/local/etc/resoto/defaults
-COPY dockerV2/common /usr/local/etc/resoto/common
-COPY dockerV2/bootstrap /usr/local/sbin/bootstrap
-COPY dockerV2/postflight /usr/local/sbin/postflight
-COPY dockerV2/resh-shim /usr/local/bin/resh-shim
-COPY dockerV2/resh-wait /usr/local/bin/resh-wait
-COPY dockerV2/resotocore-shim /usr/local/bin/resotocore-shim
-COPY dockerV2/resotoworker-shim /usr/local/bin/resotoworker-shim
-COPY dockerV2/resotometrics-shim /usr/local/bin/resotometrics-shim
-RUN chmod 755 \
-    /usr/local/sbin/bootstrap \
-    /usr/local/sbin/postflight \
-    /usr/local/bin/resh-shim \
-    /usr/local/bin/resotocore-shim \
-    /usr/local/bin/resotoworker-shim \
-    /usr/local/bin/resotometrics-shim
-RUN if [ "${TESTS:-false}" = true ]; then \
-        shellcheck -a -x -s bash -e SC2034 \
-            /usr/local/sbin/bootstrap \
-        ; \
-    fi
-COPY dockerV2/dnsmasq.conf /usr/local/etc/dnsmasq.conf
 RUN echo "${SOURCE_COMMIT:-unknown}" > /usr/local/etc/git-commit.HEAD
 
 
@@ -171,16 +70,10 @@ RUN echo "${SOURCE_COMMIT:-unknown}" > /usr/local/etc/git-commit.HEAD
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG="en_US.UTF-8"
-ENV TERM="xterm-256color"
-ENV COLORTERM="truecolor"
-ENV EDITOR="nano"
-ENV RESOTOSHELL_DOWNLOAD_DIRECTORY="/home/resoto/downloads"
 COPY --from=build-env /usr/local /usr/local
 ENV PATH=/usr/local/python/bin:/usr/local/pypy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /
-RUN groupadd -g "${PGID:-0}" -o resoto \
-    && useradd -g "${PGID:-0}" -u "${PUID:-0}" -o --create-home resoto \
-    && apt-get update \
+RUN apt-get update \
     && apt-get -y --no-install-recommends install apt-utils \
     && apt-get -y dist-upgrade \
     && apt-get -y --no-install-recommends install \
@@ -202,17 +95,11 @@ RUN groupadd -g "${PGID:-0}" -o resoto \
         nvi \
     && echo 'LANG="en_US.UTF-8"' > /etc/default/locale \
     && echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen \
-    && mkdir -p /var/run/resoto /home/resoto/downloads \
     && rm -f /bin/sh \
     && ln -s /bin/bash /bin/sh \
     && locale-gen \
-    && /usr/local/sbin/postflight \
-    && ln -s /usr/local/bin/resh-shim /usr/bin/resh \
-    && ln -s /usr/local/bin/resotocore-shim /usr/bin/resotocore \
-    && ln -s /usr/local/bin/resotoworker-shim /usr/bin/resotoworker \
-    && ln -s /usr/local/bin/resotometrics-shim /usr/bin/resotometrics \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-ENTRYPOINT ["/bin/dumb-init", "--", "/usr/local/sbin/bootstrap"]
+ENTRYPOINT ["/bin/dumb-init", "--"]
 CMD ["/bin/bash"]
