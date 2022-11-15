@@ -30,6 +30,7 @@ jobs:
       - name: Create swap for ARM builds
         run: |
           echo "Creating swap file for ARM builds"
+          cat /mnt/DATALOSS_WARNING_README.txt
           ls -al /mnt
           time sudo dd if=/dev/zero of=/swapfile1 bs=10M count=2000
           sudo chmod 600 /swapfile1
